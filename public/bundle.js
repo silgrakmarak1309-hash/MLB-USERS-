@@ -4372,8 +4372,8 @@ function cj(){
     [u, d] = m.useState(""),
     [h, p] = m.useState(!1);
 
-  const v = m.useCallback(async () => {
-    s(!0);
+  const v = m.useCallback(async (isInitial = false) => {
+    if (isInitial) s(!0);
     try {
       let reqs = [];
       let listings = [];
@@ -4383,14 +4383,14 @@ function cj(){
       if (Array.isArray(listings)) setAllListings(listings);
     } catch(err) {
     } finally {
-      s(!1);
+      if (isInitial) s(!1);
     }
   }, []);
 
   m.useEffect(() => {
-    v();
-    const interval = setInterval(()=>{if(typeof document!=="undefined"&&document.hidden)return;v();}, 8000);
-    const handleSync = () => { v(); };
+    v(true);
+    const interval = setInterval(()=>{if(typeof document!=="undefined"&&document.hidden)return;v(false);}, 15000);
+    const handleSync = () => { v(false); };
     if (typeof window !== "undefined") {
       window.addEventListener("storage", handleSync);
       window.addEventListener("recharge_request_created", handleSync);
@@ -4491,7 +4491,7 @@ function cj(){
         ] }),
         a.jsx("p", { className: "text-xs text-gray-500 mt-0.5", children: "Review ₹30 Top PRO listing boost requests with user Gmail, listing post details & photos." })
       ] }),
-      a.jsx("button", { onClick: v, className: "btn-outline text-xs", children: "🔄 Refresh" })
+      a.jsx("button", { onClick: () => v(true), className: "btn-outline text-xs", children: "🔄 Refresh" })
     ] }),
     a.jsx("div", { className: "flex gap-1 border-b border-gray-200 overflow-x-auto", children: tabs.map(tab => a.jsxs("button", {
       key: tab.key,
@@ -5513,18 +5513,18 @@ function fj(){
     [o, c] = m.useState(null),
     [u, d] = m.useState(""),
     [h, p] = m.useState(!1),
-    v = m.useCallback(async () => {
-      s(!0);
+    v = m.useCallback(async (isInitial = false) => {
+      if (isInitial) s(!0);
       try {
         n(await Jp());
       } catch {
         e.show("Failed to load recharge requests", "error");
       } finally {
-        s(!1);
+        if (isInitial) s(!1);
       }
     }, [e]);
 
-  m.useEffect(() => {    v();    const interval = setInterval(()=>{if(typeof document!=="undefined"&&document.hidden)return;v();}, 8000);    const handleSync = () => { v(); };    if (typeof window !== "undefined") {      window.addEventListener("storage", handleSync);      window.addEventListener("recharge_request_created", handleSync);      window.addEventListener("recharge_status_updated", handleSync);      return () => {        clearInterval(interval);        window.removeEventListener("storage", handleSync);        window.removeEventListener("recharge_request_created", handleSync);        window.removeEventListener("recharge_status_updated", handleSync);      };    }    return () => clearInterval(interval);  }, [v]);
+  m.useEffect(() => {    v(true);    const interval = setInterval(()=>{if(typeof document!=="undefined"&&document.hidden)return;v(false);}, 15000);    const handleSync = () => { v(false); };    if (typeof window !== "undefined") {      window.addEventListener("storage", handleSync);      window.addEventListener("recharge_request_created", handleSync);      window.addEventListener("recharge_status_updated", handleSync);      return () => {        clearInterval(interval);        window.removeEventListener("storage", handleSync);        window.removeEventListener("recharge_request_created", handleSync);        window.removeEventListener("recharge_status_updated", handleSync);      };    }    return () => clearInterval(interval);  }, [v]);
 
   const x = t.filter(f => f.status === i);
 
