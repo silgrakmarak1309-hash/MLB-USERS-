@@ -984,6 +984,142 @@ function ta({listing:e,seller:t,isFavorited:n,onFavoriteToggle:r}){if(!e)return 
     });  }catch(err){    return list.filter(l => l && !deletedIds.includes(l.id) && l.status !== "deleted");  }}async function syncLocalListingsToSupabase(){try{const{data:authData}=await L.auth.getUser();if(!authData||!authData.user)return;const userId=authData.user.id;const delList=JSON.parse(localStorage.getItem("deleted_listing_ids")||"[]");const localList=JSON.parse(localStorage.getItem("user_custom_listings")||"[]");const unsynced=localList.filter(l=>l&&(l.user_id===userId||!l.user_id)&&l.status!=="deleted"&&!delList.includes(l.id)&&!l._synced_to_supabase);if(unsynced.length===0)return;const isUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;let locList=[];try{locList=await $c();}catch(e){}for(const item of unsynced){let locId=(item.location_id&&isUuid.test(item.location_id))?item.location_id:null;if(!locId&&locList.length>0){const match=locList.find(l=>l&&l.name&&(l.name.toLowerCase().includes((item.town||"").toLowerCase())||l.name.toLowerCase().includes((item.district||"").toLowerCase())||l.name.toLowerCase().includes((item.state||"").toLowerCase())));if(match&&match.id&&isUuid.test(match.id))locId=match.id;}if(!locId)locId="27d3e482-b66a-41d5-8844-366b1f08062a";const payload={user_id:userId,title:item.title,category_id:(item.category_id&&isUuid.test(item.category_id))?item.category_id:"3ed03846-ea53-4f52-9db5-17550b75f3f2",location_id:locId,price:Number(item.price)||0,condition:item.condition||"used",description:item.description||"",phone:item.phone||"",whatsapp:item.whatsapp||item.phone||"",images:item.images||[],status:"active",is_featured:!!item.is_featured};try{const{data:ins,error:err}=await L.from("listings").insert(payload).select("*, category:categories(*), location:locations(*)").single();if(!err&&ins){item._synced_to_supabase=!0;item.id=ins.id;}}catch(err2){}}localStorage.setItem("user_custom_listings",JSON.stringify(localList));}catch(e){}}
 async function syncCloudConfig(updates) {  try {    let tUser = null;    try { const { data: t } = await L.auth.getUser(); if (t && t.user) tUser = t.user; } catch(e) {}    if (!tUser) {      try { const { data: s } = await L.auth.getSession(); if (s && s.session && s.session.user) tUser = s.session.user; } catch(e) {}    }    const isUUID = str => typeof str === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);    const syncUid = (tUser?.id && isUUID(tUser.id)) ? tUser.id : "54d69b2e-76f7-410d-84fc-af00f7101786";    let currentConfig = {};    try {      const { data: cData } = await L.from("listings").select("description").eq("title", "[SYS_APP_CONFIG]").order("created_at", { ascending: false }).limit(1);      if (cData && cData[0] && cData[0].description) {        currentConfig = JSON.parse(cData[0].description);      }    } catch(e) {}    const merged = Object.assign({}, currentConfig, updates, { updated_at: new Date().toISOString() });    await L.from("listings").insert({      user_id: syncUid,      title: "[SYS_APP_CONFIG]",      category_id: "3ed03846-ea53-4f52-9db5-17550b75f3f2",      location_id: "02ef9e15-c49f-459e-916c-2432e90dd230",      price: 0,      condition: "new",      description: JSON.stringify(merged),      phone: "9876543210",      whatsapp: "9876543210",      images: [],      status: "active",      is_featured: false    });  } catch(err) {    console.warn("Cloud config sync error:", err);  }}
 
+async function sendAdminNotification(notifData) {
+  if (!notifData) return null;
+  const nowIso = new Date().toISOString();
+  const notifObj = {
+    id: notifData.id || ("admin_notif_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7)),
+    req_id: notifData.req_id || "",
+    type: notifData.type || "top_pro_request",
+    title: notifData.title || "New Request Received",
+    message: notifData.message || "",
+    user_name: notifData.user_name || "User",
+    user_email: notifData.user_email || "",
+    user_phone: notifData.user_phone || "",
+    target_tab: notifData.target_tab || "top_pro_requests",
+    listing_id: notifData.listing_id || "",
+    listing_title: notifData.listing_title || "",
+    plan_name: notifData.plan_name || "",
+    amount: Number(notifData.amount) || 0,
+    utr: notifData.utr || "",
+    read_at: null,
+    created_at: notifData.created_at || nowIso
+  };
+
+  try {
+    const saved = JSON.parse(localStorage.getItem("admin_notifications") || "[]");
+    const isDuplicate = saved.some(function(n) {
+      if (notifObj.req_id && n.req_id && n.req_id === notifObj.req_id) return true;
+      if (notifObj.utr && n.utr && n.utr.toLowerCase().trim() === notifObj.utr.toLowerCase().trim()) return true;
+      return n.id === notifObj.id;
+    });
+    if (!isDuplicate) {
+      saved.unshift(notifObj);
+      localStorage.setItem("admin_notifications", JSON.stringify(saved));
+    }
+  } catch(err) {}
+
+  try {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("admin_notification_received", { detail: notifObj }));
+      window.dispatchEvent(new Event("storage"));
+    }
+  } catch(err) {}
+  return notifObj;
+}
+
+async function getAdminNotifications() {
+  let localNotifs = [];
+  try {
+    localNotifs = JSON.parse(localStorage.getItem("admin_notifications") || "[]");
+    if (!Array.isArray(localNotifs)) localNotifs = [];
+  } catch(e) { localNotifs = []; }
+
+  try {
+    let allReqs = [];
+    try { allReqs = await Jp(); } catch(e) {}
+    if (Array.isArray(allReqs)) {
+      const existingReqIds = new Set(localNotifs.map(n => n.req_id || n.id).filter(Boolean));
+      const existingUtrs = new Set(localNotifs.map(n => (n.utr || "").toLowerCase().trim()).filter(Boolean));
+      
+      let addedAny = false;
+      allReqs.forEach(req => {
+        if (!req || !req.id) return;
+        const cleanUtr = (req.utr || "").toLowerCase().trim();
+        if (existingReqIds.has(req.id) || (cleanUtr && cleanUtr.length >= 5 && existingUtrs.has(cleanUtr))) return;
+
+        const isTop = req.is_top_pro === true || req.type === "top_pro_boost" || req.plan_id === "plan_single_top_pro" || Number(req.amount) === 30 || Number(req.amount) === 20 || Number(req.amount) === 10 || Boolean(req.listing_id || req.listing_title);
+        const uName = req.user?.name || req.user_name || "User";
+        const uEmail = req.user?.email || req.user_email || "";
+        const uPhone = req.user?.phone || req.user_phone || "";
+        const amt = Number(req.amount) || (isTop ? 30 : 112.5);
+
+        const newNotif = {
+          id: "admin_notif_" + req.id,
+          req_id: req.id,
+          type: isTop ? "top_pro_request" : "monthly_plan_request",
+          title: isTop ? "⭐ New Top PRO Listing Request" : "👑 New Monthly PRO Plan Request",
+          message: isTop 
+            ? ("User " + uName + (uEmail ? " (" + uEmail + ")" : "") + " requested Top PRO Boost for " + (req.listing_title || "Listing") + " (₹" + amt + ")")
+            : ("User " + uName + (uEmail ? " (" + uEmail + ")" : "") + " submitted recharge of ₹" + amt + " for " + (req.plan?.name || "Monthly PRO") + " (UTR: " + (req.utr || "N/A") + ")"),
+          user_name: uName,
+          user_email: uEmail,
+          user_phone: uPhone,
+          target_tab: isTop ? "top_pro_requests" : "recharges",
+          listing_id: req.listing_id || "",
+          listing_title: req.listing_title || "",
+          plan_name: req.plan?.name || (isTop ? "Top PRO Boost" : "Monthly PRO"),
+          amount: amt,
+          utr: req.utr || "",
+          read_at: req.status === "pending" ? null : (req.reviewed_at || new Date().toISOString()),
+          created_at: req.created_at || req.submitted_at || new Date().toISOString()
+        };
+
+        existingReqIds.add(req.id);
+        if (cleanUtr && cleanUtr.length >= 5) existingUtrs.add(cleanUtr);
+        localNotifs.push(newNotif);
+        addedAny = true;
+      });
+
+      if (addedAny) {
+        localNotifs.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        try { localStorage.setItem("admin_notifications", JSON.stringify(localNotifs)); } catch(e) {}
+      }
+    }
+  } catch(e) {}
+
+  localNotifs.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  return localNotifs;
+}
+
+function markAdminNotificationRead(notifId) {
+  try {
+    const list = JSON.parse(localStorage.getItem("admin_notifications") || "[]");
+    const updated = list.map(n => {
+      if (n.id === notifId || n.req_id === notifId) {
+        return Object.assign({}, n, { read_at: new Date().toISOString() });
+      }
+      return n;
+    });
+    localStorage.setItem("admin_notifications", JSON.stringify(updated));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("storage"));
+    }
+  } catch(err) {}
+}
+
+function markAllAdminNotificationsRead() {
+  try {
+    const list = JSON.parse(localStorage.getItem("admin_notifications") || "[]");
+    const nowIso = new Date().toISOString();
+    const updated = list.map(n => Object.assign({}, n, { read_at: n.read_at || nowIso }));
+    localStorage.setItem("admin_notifications", JSON.stringify(updated));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("storage"));
+    }
+  } catch(err) {}
+}
+
 async function sendNotification(userId, title, message, type) {
   if (!userId) return;
   const notifType = type || "system";
@@ -3156,6 +3292,81 @@ const googleSvgIcon=a.jsx("svg",{className:"w-5 h-5",viewBox:"0 0 24 24",childre
     }
   } catch(err) {}
   return newReq;
+try {
+    if (isTopPro) {
+      sendAdminNotification({
+        req_id: insertId,
+        type: "top_pro_request",
+        title: "⭐ New Top PRO Listing Request",
+        message: "User " + uName + " (" + uEmail + ") requested Top PRO Boost for " + (newReq.listing_title || "Listing") + " (₹" + amt + ")",
+        user_name: uName,
+        user_email: uEmail,
+        user_phone: uPhone,
+        target_tab: "top_pro_requests",
+        listing_id: newReq.listing_id || "",
+        listing_title: newReq.listing_title || "Top PRO Listing",
+        plan_name: planObj?.name || "Top PRO Boost",
+        amount: amt,
+        utr: cleanUtr,
+        created_at: nowIso
+      });
+    } else {
+      sendAdminNotification({
+        req_id: insertId,
+        type: "monthly_plan_request",
+        title: "👑 New Monthly PRO Plan Request",
+        message: "User " + uName + " (" + uEmail + ") submitted recharge of ₹" + amt + " for " + (planObj?.name || "Monthly PRO") + " (UTR: " + cleanUtr + ")",
+        user_name: uName,
+        user_email: uEmail,
+        user_phone: uPhone,
+        target_tab: "recharges",
+        listing_id: "",
+        listing_title: "",
+        plan_name: planObj?.name || "Monthly PRO Plan",
+        amount: amt,
+        utr: cleanUtr,
+        created_at: nowIso
+      });
+    }
+  } catch(err) {}
+  try {
+    if (isTopPro) {
+      sendAdminNotification({
+        req_id: insertId,
+        type: "top_pro_request",
+        title: "⭐ New Top PRO Listing Request",
+        message: "User " + uName + " (" + uEmail + ") requested Top PRO Boost for " + (newReq.listing_title || "Listing") + " (₹" + amt + ")",
+        user_name: uName,
+        user_email: uEmail,
+        user_phone: uPhone,
+        target_tab: "top_pro_requests",
+        listing_id: newReq.listing_id || "",
+        listing_title: newReq.listing_title || "Top PRO Listing",
+        plan_name: planObj?.name || "Top PRO Boost",
+        amount: amt,
+        utr: cleanUtr,
+        created_at: nowIso
+      });
+    } else {
+      sendAdminNotification({
+        req_id: insertId,
+        type: "monthly_plan_request",
+        title: "👑 New Monthly PRO Plan Request",
+        message: "User " + uName + " (" + uEmail + ") submitted recharge of ₹" + amt + " for " + (planObj?.name || "Monthly PRO") + " (UTR: " + cleanUtr + ")",
+        user_name: uName,
+        user_email: uEmail,
+        user_phone: uPhone,
+        target_tab: "recharges",
+        listing_id: "",
+        listing_title: "",
+        plan_name: planObj?.name || "Monthly PRO Plan",
+        amount: amt,
+        utr: cleanUtr,
+        created_at: nowIso
+      });
+    }
+  } catch(err) {}
+  return newReq;
 }async function Y1(e){
   let list = [];
   try {
@@ -4578,40 +4789,160 @@ function cj(){
   const { user: authUser, profile: e, loading: t } = Ae(),
   n = ke(),
   [r, s] = m.useState("top_pro_requests"),
-  [i, l] = m.useState(!1);
+  [i, l] = m.useState(!1),
+  [adminNotifs, setAdminNotifs] = m.useState([]),
+  [showNotifs, setShowNotifs] = m.useState(!1),
+  [toastNotif, setToastNotif] = m.useState(null);
 
   const isAdmin = isUserAdmin(e) || isUserAdmin(authUser) || (authUser && isUserAdmin({ email: authUser.email }));
-
   m.useEffect(() => {
     if (!t && !isAdmin) {
       n("/");
     }
   }, [isAdmin, t, n]);
 
+  const loadNotifs = m.useCallback(async () => {
+    try {
+      const list = await getAdminNotifications();
+      setAdminNotifs(list);
+    } catch(err) {}
+  }, []);
+
+  m.useEffect(() => {
+    loadNotifs();
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      loadNotifs();
+    }, 8000);
+
+    const handleNewAdminNotif = (ev) => {
+      loadNotifs();
+      if (ev && ev.detail) {
+        setToastNotif(ev.detail);
+        setTimeout(() => { setToastNotif(null); }, 6500);
+      }
+    };
+
+    const handleSync = () => { loadNotifs(); };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("admin_notification_received", handleNewAdminNotif);
+      window.addEventListener("recharge_request_created", handleSync);
+      window.addEventListener("recharge_status_updated", handleSync);
+      window.addEventListener("storage", handleSync);
+      return () => {
+        clearInterval(interval);
+        window.removeEventListener("admin_notification_received", handleNewAdminNotif);
+        window.removeEventListener("recharge_request_created", handleSync);
+        window.removeEventListener("recharge_status_updated", handleSync);
+        window.removeEventListener("storage", handleSync);
+      };
+    }
+    return () => clearInterval(interval);
+  }, [loadNotifs]);
+
   if (t) return a.jsx("div", { className: "min-h-screen flex items-center justify-center bg-gray-50", children: a.jsx(xe, { size: 32 }) });
   if (!isAdmin) return null;
-
   const isSuper = Boolean(e && (e.role === "super_admin" || e.email === "silgrakmarak1309@gmail.com" || e.email === "grejamarak@gmail.com" || e.email === "megamarak8@gmail.com"));
 
+  const unreadNotifs = adminNotifs.filter(notif => !notif.read_at);
+  const unreadCount = unreadNotifs.length;
+  const topProPendingCount = adminNotifs.filter(notif => notif.type === "top_pro_request" && !notif.read_at).length;
+  const rechargePendingCount = adminNotifs.filter(notif => notif.type === "monthly_plan_request" && !notif.read_at).length;
+
+  const handleOpenNotif = (notif) => {
+    markAdminNotificationRead(notif.id);
+    loadNotifs();
+    setShowNotifs(false);
+    setToastNotif(null);
+    if (notif.target_tab) {
+      s(notif.target_tab);
+    }
+  };
+
+  const handleMarkAllRead = () => {
+    markAllAdminNotificationsRead();
+    loadNotifs();
+  };
+
   return a.jsxs("div", {
-    className: "min-h-screen bg-gray-100 flex flex-col md:flex-row",
+    className: "min-h-screen bg-gray-100 flex flex-col md:flex-row relative",
     children: [
+      toastNotif && a.jsxs("div", {
+        className: "fixed top-4 right-4 z-50 max-w-sm w-full bg-white rounded-2xl shadow-2xl border border-primary-200 p-4 animate-slide-in flex items-start gap-3",
+        children: [
+          a.jsx("div", {
+            className: "w-10 h-10 rounded-xl bg-primary-50 text-primary-600 flex items-center justify-center shrink-0 text-lg",
+            children: toastNotif.type === "top_pro_request" ? "⭐" : "👑"
+          }),
+          a.jsxs("div", {
+            className: "flex-1 min-w-0",
+            children: [
+              a.jsxs("div", {
+                className: "flex items-center justify-between gap-1",
+                children: [
+                  a.jsx("p", { className: "text-xs font-bold text-gray-900 truncate", children: toastNotif.title }),
+                  a.jsx("span", { className: "text-[10px] text-gray-400 shrink-0", children: "Just now" })
+                ]
+              }),
+              a.jsx("p", { className: "text-xs text-gray-600 mt-0.5 line-clamp-2", children: toastNotif.message }),
+              a.jsxs("div", {
+                className: "mt-2.5 flex items-center gap-2",
+                children: [
+                  a.jsx("button", {
+                    onClick: () => handleOpenNotif(toastNotif),
+                    className: "px-3 py-1 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors",
+                    children: "Open Request →"
+                  }),
+                  a.jsx("button", {
+                    onClick: () => setToastNotif(null),
+                    className: "px-2 py-1 text-gray-400 hover:text-gray-600 text-xs rounded-lg",
+                    children: "Dismiss"
+                  })
+                ]
+              })
+            ]
+          }),
+          a.jsx("button", {
+            onClick: () => setToastNotif(null),
+            className: "text-gray-400 hover:text-gray-600 p-1 -mr-1 -mt-1",
+            children: a.jsx(Un, { className: "w-4 h-4" })
+          })
+        ]
+      }),
       a.jsxs("aside", {
         className: "hidden md:flex w-64 bg-gray-900 text-white flex-col fixed inset-y-0 left-0 z-40 shadow-xl",
         children: [
           a.jsxs("div", {
-            className: "p-4 flex items-center gap-2.5 border-b border-gray-800 shrink-0",
+            className: "p-4 flex items-center justify-between border-b border-gray-800 shrink-0",
             children: [
-              a.jsx("img", {
-                src: APP_LOGO_SRC,
-                onError: ev => { ev.currentTarget.src = APP_LOGO_SRC; },
-                alt: "Admin",
-                className: "w-8 h-8 rounded-lg object-contain bg-white/10 p-0.5"
-              }),
               a.jsxs("div", {
+                className: "flex items-center gap-2.5",
                 children: [
-                  a.jsx("p", { className: "text-white font-bold text-sm leading-tight", children: "Admin Panel" }),
-                  a.jsx("p", { className: "text-gray-400 text-[10px]", children: "Meri Local Bazaar" })
+                  a.jsx("img", {
+                    src: APP_LOGO_SRC,
+                    onError: ev => { ev.currentTarget.src = APP_LOGO_SRC; },
+                    alt: "Admin",
+                    className: "w-8 h-8 rounded-lg object-contain bg-white/10 p-0.5"
+                  }),
+                  a.jsxs("div", {
+                    children: [
+                      a.jsx("p", { className: "text-white font-bold text-sm leading-tight", children: "Admin Panel" }),
+                      a.jsx("p", { className: "text-gray-400 text-[10px]", children: "Meri Local Bazaar" })
+                    ]
+                  })
+                ]
+              }),
+              a.jsxs("button", {
+                onClick: () => setShowNotifs(!showNotifs),
+                className: "relative p-2 rounded-lg bg-gray-800/80 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors",
+                title: "Admin Notifications",
+                children: [
+                  a.jsx(xo, { className: "w-4 h-4" }),
+                  unreadCount > 0 && a.jsx("span", {
+                    className: "absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-pulse",
+                    children: unreadCount > 9 ? "9+" : unreadCount
+                  })
                 ]
               })
             ]
@@ -4621,12 +4952,22 @@ function cj(){
             children: Sd.map(c => {
               const Icon = c.icon;
               const isSelected = r === c.key;
+              const badgeCount = c.key === "top_pro_requests" ? topProPendingCount : (c.key === "recharges" ? rechargePendingCount : 0);
               return a.jsxs("button", {
                 onClick: () => s(c.key),
-                className: `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold w-full text-left transition-all ${isSelected ? "bg-primary-500 text-white shadow-sm font-bold" : "text-gray-300 hover:text-white hover:bg-gray-800/80"}`,
+                className: "flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold w-full text-left transition-all " + (isSelected ? "bg-primary-500 text-white shadow-sm font-bold" : "text-gray-300 hover:text-white hover:bg-gray-800/80"),
                 children: [
-                  a.jsx(Icon, { className: "w-4 h-4 shrink-0" }),
-                  a.jsx("span", { className: "truncate", children: c.label })
+                  a.jsxs("div", {
+                    className: "flex items-center gap-3 truncate",
+                    children: [
+                      a.jsx(Icon, { className: "w-4 h-4 shrink-0" }),
+                      a.jsx("span", { className: "truncate", children: c.label })
+                    ]
+                  }),
+                  badgeCount > 0 && a.jsx("span", {
+                    className: "px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-gray-950 shrink-0",
+                    children: badgeCount
+                  })
                 ]
               }, c.key);
             })
@@ -4668,12 +5009,22 @@ function cj(){
                 children: Sd.map(c => {
                   const Icon = c.icon;
                   const isSelected = r === c.key;
+                  const badgeCount = c.key === "top_pro_requests" ? topProPendingCount : (c.key === "recharges" ? rechargePendingCount : 0);
                   return a.jsxs("button", {
                     onClick: () => { s(c.key); l(!1); },
-                    className: `flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold w-full text-left transition-all ${isSelected ? "bg-primary-500 text-white shadow-sm" : "text-gray-300 hover:text-white hover:bg-gray-800/80"}`,
+                    className: "flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold w-full text-left transition-all " + (isSelected ? "bg-primary-500 text-white shadow-sm" : "text-gray-300 hover:text-white hover:bg-gray-800/80"),
                     children: [
-                      a.jsx(Icon, { className: "w-4 h-4 shrink-0" }),
-                      a.jsx("span", { className: "truncate", children: c.label })
+                      a.jsxs("div", {
+                        className: "flex items-center gap-3 truncate",
+                        children: [
+                          a.jsx(Icon, { className: "w-4 h-4 shrink-0" }),
+                          a.jsx("span", { className: "truncate", children: c.label })
+                        ]
+                      }),
+                      badgeCount > 0 && a.jsx("span", {
+                        className: "px-2 py-0.5 rounded-full text-xs font-bold bg-amber-400 text-gray-950 shrink-0",
+                        children: badgeCount
+                      })
                     ]
                   }, c.key);
                 })
@@ -4697,11 +5048,126 @@ function cj(){
         className: "flex-1 md:ml-64 flex flex-col min-w-0",
         children: [
           a.jsxs("div", {
-            className: "md:hidden sticky top-0 z-30 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-xs",
+            className: "sticky top-0 z-30 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-xs",
             children: [
-              a.jsx("button", { onClick: () => l(!0), className: "p-2 -ml-2 rounded-lg hover:bg-gray-100 text-gray-700", children: a.jsx(Ip, { className: "w-5 h-5" }) }),
-              a.jsx("h1", { className: "text-sm font-bold text-gray-900", children: "Admin Panel" }),
-              a.jsx("button", { onClick: () => n("/"), className: "p-2 -mr-2 rounded-lg hover:bg-gray-100 text-gray-700", children: a.jsx(cs, { className: "w-5 h-5" }) })
+              a.jsxs("div", {
+                className: "flex items-center gap-3",
+                children: [
+                  a.jsx("button", { onClick: () => l(!0), className: "md:hidden p-2 -ml-2 rounded-lg hover:bg-gray-100 text-gray-700", children: a.jsx(Ip, { className: "w-5 h-5" }) }),
+                  a.jsxs("div", {
+                    children: [
+                      a.jsx("h1", { className: "text-sm md:text-base font-bold text-gray-900", children: (Sd.find(c => c.key === r)?.label || "Admin Panel") }),
+                      a.jsx("p", { className: "hidden md:block text-[11px] text-gray-500", children: "Manage platform listings, requests, and settings in real time" })
+                    ]
+                  })
+                ]
+              }),
+              a.jsxs("div", {
+                className: "flex items-center gap-2 relative",
+                children: [
+                  a.jsxs("button", {
+                    onClick: () => setShowNotifs(!showNotifs),
+                    className: "relative p-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors flex items-center gap-1.5",
+                    children: [
+                      a.jsx(xo, { className: "w-5 h-5" }),
+                      unreadCount > 0 && a.jsx("span", {
+                        className: "absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center shadow-xs animate-bounce",
+                        children: unreadCount > 9 ? "9+" : unreadCount
+                      }),
+                      unreadCount > 0 && a.jsxs("span", {
+                        className: "hidden md:inline text-xs font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-md",
+                        children: [unreadCount, " new"]
+                      })
+                    ]
+                  }),
+                  a.jsx("button", {
+                    onClick: () => n("/"),
+                    className: "p-2 rounded-xl hover:bg-gray-100 text-gray-700 text-xs font-semibold flex items-center gap-1",
+                    title: "Exit to Marketplace",
+                    children: a.jsx(cs, { className: "w-5 h-5" })
+                  }),
+                  showNotifs && a.jsxs("div", {
+                    className: "absolute top-12 right-0 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-gray-200 z-50 overflow-hidden animate-fade-in",
+                    children: [
+                      a.jsxs("div", {
+                        className: "p-3.5 bg-gray-900 text-white flex items-center justify-between",
+                        children: [
+                          a.jsxs("div", {
+                            className: "flex items-center gap-2",
+                            children: [
+                              a.jsx(xo, { className: "w-4 h-4 text-amber-400" }),
+                              a.jsx("span", { className: "text-xs font-bold", children: "Admin Request Notifications" }),
+                              unreadCount > 0 && a.jsx("span", {
+                                className: "bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full",
+                                children: unreadCount
+                              })
+                            ]
+                          }),
+                          unreadCount > 0 && a.jsx("button", {
+                            onClick: handleMarkAllRead,
+                            className: "text-[11px] text-gray-300 hover:text-white underline",
+                            children: "Mark all read"
+                          })
+                        ]
+                      }),
+                      a.jsx("div", {
+                        className: "max-h-96 overflow-y-auto divide-y divide-gray-100",
+                        children: adminNotifs.length === 0 ? a.jsxs("div", {
+                          className: "p-6 text-center text-gray-400 text-xs",
+                          children: [
+                            a.jsx(xo, { className: "w-8 h-8 mx-auto text-gray-300 mb-2 opacity-50" }),
+                            "No request notifications yet."
+                          ]
+                        }) : adminNotifs.map(item => {
+                          const isUnread = !item.read_at;
+                          const isTop = item.type === "top_pro_request";
+                          return a.jsxs("div", {
+                            onClick: () => handleOpenNotif(item),
+                            className: "p-3 hover:bg-gray-50 cursor-pointer transition-colors flex items-start gap-2.5 relative " + (isUnread ? "bg-primary-50/30" : ""),
+                            children: [
+                              a.jsx("div", {
+                                className: "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 text-sm " + (isTop ? "bg-amber-100 text-amber-800" : "bg-primary-100 text-primary-800"),
+                                children: isTop ? "⭐" : "👑"
+                              }),
+                              a.jsxs("div", {
+                                className: "flex-1 min-w-0",
+                                children: [
+                                  a.jsxs("div", {
+                                    className: "flex items-center justify-between gap-1",
+                                    children: [
+                                      a.jsx("span", {
+                                        className: "text-xs font-bold text-gray-900 truncate",
+                                        children: item.title
+                                      }),
+                                      a.jsx("span", {
+                                        className: "text-[10px] text-gray-400 shrink-0",
+                                        children: item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
+                                      })
+                                    ]
+                                  }),
+                                  a.jsx("p", {
+                                    className: "text-[11px] text-gray-600 mt-0.5 line-clamp-2",
+                                    children: item.message
+                                  }),
+                                  a.jsxs("div", {
+                                    className: "mt-1.5 flex items-center gap-2 text-[10px] text-gray-500 font-medium",
+                                    children: [
+                                      a.jsxs("span", { className: "font-bold text-gray-800", children: ["₹", item.amount] }),
+                                      item.utr && a.jsxs("span", { className: "bg-gray-100 px-1 rounded text-gray-600 font-mono", children: ["UTR: ", item.utr] }),
+                                      a.jsxs("span", { className: "text-primary-600 font-semibold ml-auto flex items-center gap-0.5", children: ["View in ", item.target_tab === "top_pro_requests" ? "Top PRO" : "Recharges", " →"] })
+                                    ]
+                                  })
+                                ]
+                              }),
+                              isUnread && a.jsx("span", { className: "w-2 h-2 rounded-full bg-primary-600 shrink-0 mt-1" })
+                            ]
+                          }, item.id);
+                        })
+                      })
+                    ]
+                  })
+                ]
+              })
             ]
           }),
           a.jsxs("main", {
@@ -4725,7 +5191,8 @@ function cj(){
       })
     ]
   });
-}function dj({onNavigate}){
+}
+function dj({onNavigate}){
   const[e,t]=m.useState(!0),[n,r]=m.useState([]),[s,i]=m.useState([]),[l,o]=m.useState([]),[c,u]=m.useState([]);
   const loadData=m.useCallback(()=>{Promise.all([Ic(),Gp(),Jp(),Qp()]).then(([p,v,x,w])=>{r(p),i(v),o(x),u(w)}).catch(()=>{})},[]);
   m.useEffect(()=>{loadData();t(!1);},[loadData]);
